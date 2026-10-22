@@ -23,38 +23,35 @@ const char html_code[] PROGMEM = R"rawliteral(
         <h1 style = "text-align: center;">
         Flight Control System
         </h1>
-        <button onclick = "servo_command('left')">
-        Left
-        </button>
-        <button onclick = "servo_command('right')">
-        Right
-        </button>
-        <button onclick = "servo_command('up')">
-        Up
-        </button>
-        <button onclick = "servo_command('down')">
-        Down
-        </button>
-        <button onclick = "servo_command('reset')">
-        Reset
-        </button>
+
         <span id = "span_servo_1_angle">
-        90 degree(s)
-        </span>
+        Aileron: 90 degree(s)
+        </span> <br>
+
         <span id = "span_servo_2_angle">
-        90 degree(s)
-        </span>
-        <label for = "slider_throttle_percentage">
-        Throttle:
-        </label>
-        <input type = "range" id = "slider_throttle_percentage" min = "0" max = "180" value = "90" oninput = "throttle_command(this.value)">
+        Elevator: 90 degree(s)
+        </span> <br>
+
         <span id = "span_throttle_percentage">
-        0%
-        </span>
-        <br>
+        Throttle: 0%
+        </span> <br> <br>
+
+
         <span id = "span_joystick_status">
         Joystick Status: Disconnected
-        </span>
+        </span> <br> <br>
+
+
+        <input type = "radio" id = "radio_input_Extreme_3D_pro_(Vendor:_046d_Product:_c215)" name = "joystick_options" value = "Extreme 3D pro (Vendor: 046d Product: c215)" onclick = "update_joystick_input(value)">
+        <label for = "radio_input_Extreme_3D_pro_(Vendor:_046d_Product:_c215)">
+        Extreme 3D pro (Vendor: 046d Product: c215)
+        </label> <br>
+        
+        <input type = "radio" id = "radio_input_DualSense_Wireless_Controller_(STANDARD_GAMEPAD)" name = "joystick_options" value = "DualSense Wireless Controller (STANDARD GAMEPAD)" onclick = "update_joystick_input(value)">
+        <label for = "radio_input_DualSense_Wireless_Controller_(STANDARD_GAMEPAD)">
+        DualSense Wireless Controller (STANDARD GAMEPAD)
+        </label>
+
         <script>
             let socket = new WebSocket("ws://" + window.location.hostname + "/websocket");
             let last_servo_1_angle = 90;
@@ -62,77 +59,45 @@ const char html_code[] PROGMEM = R"rawliteral(
             let last_throttle_setting = 0;
             let previous_time = 0;
             let time_per_frame = 50;
+            let animation_frame_id = null;
 
-            function servo_command(movement) {
-                let data_to_send = {};
-                let new_servo_1_angle = 90;
-                let new_servo_2_angle = 90;
-                if (movement === "left") {
-                    new_servo_1_angle = 45
-                    data_to_send.new_servo_1_angle = new_servo_1_angle;
-                } else if (movement === "right") {
-                    new_servo_1_angle = 135
-                    data_to_send.new_servo_1_angle = new_servo_1_angle;
-                } else if (movement === "up") {
-                    new_servo_2_angle = 45
-                    data_to_send.new_servo_2_angle = new_servo_2_angle;
-                } else if (movement === "down") {
-                    new_servo_2_angle = 135
-                    data_to_send.new_servo_2_angle = new_servo_2_angle;
-                } else if (movement === "reset") {
-                    new_servo_1_angle = 90;
-                    new_servo_2_angle = 90;
-                    data_to_send.new_servo_1_angle = new_servo_1_angle;
-                    data_to_send.new_servo_2_angle = new_servo_2_angle;
+            function update_joystick_input(joystick_id) {
+                if (animation_frame_id) {
+                    cancelAnimationFrame(animation_frame_id);
                 }
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send(JSON.stringify(data_to_send));
-                    document.getElementById("span_servo_1_angle").innerText = new_servo_1_angle + " degree(s);";
-                    document.getElementById("span_servo_2_angle").innerText = new_servo_2_angle + " degree(s);";
-                }
-            }
-
-            function throttle_command(throttle_percentage) {
-                if (socket.readyState === WebSocket.OPEN) {
-                    socket.send("90," + throttle_percentage + ",0");
-                    document.getElementById("span_throttle_percentage").innerText = throttle_percentage;
-                }
-            }
-            
-            function update_joystick_input() {
+                
                 let joystick_array = navigator.getGamepads();
                 let current_time = Date.now();
-                if (joystick_array[0] && (current_time - previous_time) >= time_per_frame) {
-                    let joystick = joystick_array[0];
-                    if (joystick.connected) {
-                        let new_servo_1_angle = Math.round(Math.abs((joystick.axes[0] - 1) / 2) * 40) + 70;
-                        let new_servo_2_angle = Math.round(Math.abs((joystick.axes[1] - 1) / 2) * 50) + 65;
-                        let new_throttle_setting = Math.round((Math.abs(joystick.axes[3] - 1) / 2) * 180);
-                        
-                        document.getElementById("span_servo_1_angle").innerText = new_servo_1_angle;
-                        document.getElementById("span_servo_2_angle").innerText = new_servo_2_angle;
-                        document.getElementById("span_throttle_percentage").innerText = Math.round((Math.abs(joystick.axes[3] - 1) / 2) * 100) + "%";
-                        
-                        if (socket.readyState === WebSocket.OPEN) {
-                            socket.send(new_servo_1_angle + "," + new_servo_2_angle + "," + new_throttle_setting);
-                        }
-                        
+                let joystick = Array.from(joystick_array).find(joystick_array => joystick_array && joystick_array.id === joystick_id);
+
+                if (joystick && joystick.connected && (current_time - previous_time) >= time_per_frame) {
+                    let joystick_servo_angle_throttle_setting_2D_array = [["Extreme 3D pro (Vendor: 046d Product: c215)", Math.round(Math.abs((joystick.axes[0] - 1) / 2) * 40) + 70, Math.round(Math.abs((joystick.axes[1] - 1) / 2) * 50) + 65, Math.round(Math.abs(joystick.axes[6] - 1) / 2 * 180)],
+                                                                          ["DualSense Wireless Controller (STANDARD GAMEPAD)", Math.round(Math.abs((joystick.axes[0] - 1) / 2) * 40) + 70, Math.round(Math.abs((joystick.axes[1] - 1) / 2) * 50) + 65, Math.round(joystick.buttons[7].value * 180)]]
+                    
+                    
+                    document.getElementById("span_joystick_status").innerText = "Joystick Status: Connected to " + joystick_id;
+
+                    document.getElementById("span_servo_1_angle").innerText = "Aileron: " + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][1] + " degree(s)";
+                    document.getElementById("span_servo_2_angle").innerText = "Elevator: " + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][2] + " degree(s)";
+                    document.getElementById("span_throttle_percentage").innerText = "Throttle: " + Math.round(joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][3] / 1.8) + " %";
+                    
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][1] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][2] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][3]);
                         previous_time = Date.now()
                     }
+                    
                 }
-                requestAnimationFrame(update_joystick_input);
+                
+                animation_frame_id = requestAnimationFrame(() => update_joystick_input(joystick_id));
             }
 
             window.addEventListener("gamepadconnected", (e) => {
-            console.log("Gamepad connected:", e.gamepad.id);
-            document.getElementById("span_joystick_status").innerText = "Joystick Status: Connected to " + e.gamepad.id;
             });
 
             window.addEventListener("gamepaddisconnected", (e) => {
             document.getElementById("span_joystick_status").innerText = "Joystick Status: Disconnected";
             });
 
-            requestAnimationFrame(update_joystick_input);
         </script>
     </body>
 </html>
@@ -207,4 +172,50 @@ void loop() {
     websocket.cleanupClients();
 }
 
-// let throttle_setting = Math.round((throttle_percentage / 100) * 180);
+/* let throttle_setting = Math.round((throttle_percentage / 100) * 180);
+
+
+            function servo_command(movement) {
+                let data_to_send = {};
+                let new_servo_1_angle = 90;
+                let new_servo_2_angle = 90;
+                if (movement === "left") {
+                    new_servo_1_angle = 45
+                    data_to_send.new_servo_1_angle = new_servo_1_angle;
+                } else if (movement === "right") {
+                    new_servo_1_angle = 135
+                    data_to_send.new_servo_1_angle = new_servo_1_angle;
+                } else if (movement === "up") {
+                    new_servo_2_angle = 45
+                    data_to_send.new_servo_2_angle = new_servo_2_angle;
+                } else if (movement === "down") {
+                    new_servo_2_angle = 135
+                    data_to_send.new_servo_2_angle = new_servo_2_angle;
+                } else if (movement === "reset") {
+                    new_servo_1_angle = 90;
+                    new_servo_2_angle = 90;
+                    data_to_send.new_servo_1_angle = new_servo_1_angle;
+                    data_to_send.new_servo_2_angle = new_servo_2_angle;
+                }
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send(JSON.stringify(data_to_send));
+                    document.getElementById("span_servo_1_angle").innerText = new_servo_1_angle + " degree(s);";
+                    document.getElementById("span_servo_2_angle").innerText = new_servo_2_angle + " degree(s);";
+                }
+            }
+
+            function throttle_command(throttle_percentage) {
+                if (socket.readyState === WebSocket.OPEN) {
+                    socket.send("90,90," + throttle_percentage);
+                    document.getElementById("span_throttle_percentage").innerText = throttle_percentage;
+                }
+            }
+            */
+
+
+            /*
+                    
+                    
+                    
+            requestAnimationFrame(update_joystick_input(e.gamepad.id));
+                }*/
