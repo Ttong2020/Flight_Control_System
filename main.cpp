@@ -3,13 +3,21 @@
 #include <ESPAsyncWebServer.h>
 #include <ESP32Servo.h>
 #include <ArduinoJson.h>
+#include <map>
 
-const char* ssid = "ESP32-Flight_Control_System";
+const char* ssid = "ESP32_Flight_Control_System";
 const char* password = "192837465";
 
-const short int servo_1_pin = 25;
-const short int servo_2_pin = 26;
-const short int esc_pin = 21;
+const uint8_t servo_1_pin = 25;
+const uint8_t servo_2_pin = 26;
+const uint8_t esc_pin = 21;
+
+std::map<std::string, std::array<float, 5>> kp_ki_kd_sum_of_past_integrals_previous_error = {{"airspeed", {1.0f, 1.0f, 1.0f, 0.0f, 0.0f}},
+                                                                                             {"altitude", {1.0f, 1.0f, 1.0f, 0.0f, 0.0f}},
+                                                                                             {"heading", {1.0f, 1.0f, 1.0f, 0.0f, 0.0f}}
+                                                                                            };
+const uint8_t dt = 50;
+const uint8_t stall_airspeed = 
 
 const char html_code[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -60,6 +68,9 @@ const char html_code[] PROGMEM = R"rawliteral(
             let previous_time = 0;
             let time_per_frame = 50;
             let animation_frame_id = null;
+            let target_airspeed = null;
+            let target_altitude = null;
+            let target_heading = null;
 
             function update_joystick_input(joystick_id) {
                 if (animation_frame_id) {
@@ -82,7 +93,7 @@ const char html_code[] PROGMEM = R"rawliteral(
                     document.getElementById("span_throttle_percentage").innerText = "Throttle: " + Math.round(joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][3] / 1.8) + " %";
                     
                     if (socket.readyState === WebSocket.OPEN) {
-                        socket.send(joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][1] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][2] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][3]);
+                        socket.send(joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][1] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][2] + "," + joystick_servo_angle_throttle_setting_2D_array[joystick_servo_angle_throttle_setting_2D_array.findIndex(row => row[0] === joystick_id)][3] + "," + target_airspeed + "," + target_altitude + "," + target_heading);
                         previous_time = Date.now()
                     }
                     
@@ -110,6 +121,18 @@ Servo esc;
 AsyncWebServer server(80);
 AsyncWebSocket websocket("/websocket");
 
+float pid_controller(std::string autopilot_parameter, float target_value, float measured_value) {
+    float current_error = target_value - measured_value;
+    float proportional_contribution = kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][0] * current_error;
+    float integral_contribution = kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][1] * (kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][3] + (current_error * dt));
+    float derivative_contribution = kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][2] * ((current_error - kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][4]) / dt);
+    float output_control = proportional_contribution + integral_contribution + derivative_contribution;
+    kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][3] = integral_contribution;
+    kp_ki_kd_sum_of_past_integrals_previous_error[autopilot_parameter][4] = current_error;
+
+    return(output_control);
+}
+
 void understand_websocket_message(void *arg, uint8_t *data, size_t len) {
     AwsFrameInfo *info = (AwsFrameInfo*)arg;
     if (info->final && info->index == 0 && info->len == len && info->opcode == WS_TEXT) {
@@ -122,9 +145,22 @@ void understand_websocket_message(void *arg, uint8_t *data, size_t len) {
         memcpy(buffer, data, len);
         buffer[len] = '\0';
         
-        int new_servo_1_angle, new_servo_2_angle, new_throttle_setting;
+        int new_servo_1_angle, new_servo_2_angle, new_throttle_setting, target_airspeed, target_altitude, target_heading;
 
-        if (sscanf(buffer, "%d,%d,%d", &new_servo_1_angle, &new_servo_2_angle, &new_throttle_setting) == 3) {
+        if (sscanf(buffer, "%d,%d,%d,%f,%f,%f", &new_servo_1_angle, &new_servo_2_angle, &new_throttle_setting, &target_airspeed, &target_altitude, &target_heading) == 6) {
+            if (measured_airspeed < (stall_airspeed * 1.1)) {
+
+            } else if (measured_airspeed >= (stall_airspeed * 1.1)) {
+                if (target_airspeed) {
+                    uint8_t new_throttle_setting = Math.round(pid_controller(std::string "airspeed", target_airspeed, measured_airspeed))
+                }
+                if (target_altitude) {
+                    uint8_t new_servo_2_angle = Math.round(pid_controller(std::string "altitude", target_altitude, measured_altitude))
+                }
+                if (target_heading) {
+                    uint8_t new_servo_1_angle = Math.round(pid_controller(std::string "heading", target_heading, measured_heading))
+                }
+            }
             servo_1.write(constrain(new_servo_1_angle, 70, 110));
             servo_2.write(constrain(new_servo_2_angle, 45, 135));
             esc.write(constrain(new_throttle_setting, 0, 180));
