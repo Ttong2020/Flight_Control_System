@@ -7,7 +7,7 @@ void setup() {
     WiFi.mode(WIFI_STA);
     WiFi.begin();
 
-    Serial.print("Glider MAC Address: ");
+    Serial.print("Ground MAC Address: ");
     Serial.println(WiFi.macAddress());
 }
 
