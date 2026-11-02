@@ -7,15 +7,17 @@
 #include <vector>
 #include <TinyGPS++.h>
 #include <cmath>
+#include <esp_task_wdt.h>
 
 uint8_t ground_esp32_mac_address[6] = {0x20, 0x9B, 0xA9, 0x67, 0xC7, 0x74};
 uint32_t previous_time_received_packet_milliseconds = 0;
 uint16_t maximum_safe_timeout_milliseconds = 500;
 uint32_t previous_time_sent_packet_milliseconds = 0;
-uint16_t time_delay_between_packet_request_milliseconds = 1000;
+uint16_t time_delay_between_packet_request_milliseconds = 50;
 bool is_configuration_struct_1_filled = false;
 bool is_configuration_struct_2_filled = false;
 bool is_configuration_struct_setup = false;
+bool is_normal_operation_phase_started = false;
 
 // Configuration data to be received from ground ESP32.
 struct configuration_struct_1_encode_decode_message_info {
@@ -36,11 +38,11 @@ struct configuration_struct_2_other_info {
     float dt_seconds;
     uint16_t wind_direction_degrees;
     uint8_t wind_speed_metres_per_second;
-    uint8_t aileron_servo_pin;
-    uint8_t elevator_servo_pin;
-    uint8_t throttle_esc_pin;
-    uint8_t gps_uart2_rx_pin;
-    uint8_t gps_uart2_tx_pin;
+    uint8_t aileron_servo_pin = 25;
+    uint8_t elevator_servo_pin = 26;
+    uint8_t throttle_esc_pin = 21;
+    uint8_t gps_uart2_rx_pin = 16;
+    uint8_t gps_uart2_tx_pin = 17;
 };
 
 configuration_struct_1_encode_decode_message_info flight_config_1;
@@ -93,6 +95,7 @@ void encode_send_message_to_ground(const bool is_autopilot_engaged) {
 void decode_execute_message_from_ground(const uint8_t* ground_esp32_mac_address, const uint8_t* incoming_message, int len) {
     if (len == flight_config_1.bytes_required_for_normal_operation_ground_to_glider) {
         previous_time_received_packet_milliseconds = millis();
+        is_normal_operation_phase_started = true;
 
         uint64_t total_value_received_base_256 = 0;
         for (uint8_t i = 0; i < flight_config_1.bytes_required_for_normal_operation_ground_to_glider; i++) {
@@ -144,17 +147,17 @@ void decode_configuration_info_message_from_ground(const uint8_t* ground_esp_mac
     if (len == sizeof(flight_config_1) && incoming_message[0] == 0x0A && is_configuration_struct_1_filled == false) {
         memcpy(&flight_config_1, incoming_message, sizeof(flight_config_1));
         is_configuration_struct_1_filled = true;
-        Serial.println("Packet 1 received.");
     } else if (len == sizeof(flight_config_2) && incoming_message[0] == 0x14 && is_configuration_struct_2_filled == false) {
         memcpy(&flight_config_2, incoming_message, sizeof(flight_config_2));
         is_configuration_struct_2_filled = true;
-        Serial.println("Packet 2 received.");
     }
 }
 
 void servo_motor_gps_serial_setup() {
-    gps_serial.begin(9600, SERIAL_8N1, flight_config_2.gps_uart2_rx_pin, flight_config_2.gps_uart2_tx_pin);
-    Serial.println("Success: Successfully initialised GPS UART2 Serial port.");
+    ESP32PWM::allocateTimer(2);
+    throttle_servo.setPeriodHertz(50);
+    throttle_servo.attach(flight_config_2.throttle_esc_pin, 1000, 2000);
+    throttle_servo.write(0);
 
     ESP32PWM::allocateTimer(0);
     aileron_servo.setPeriodHertz(50);
@@ -166,71 +169,60 @@ void servo_motor_gps_serial_setup() {
     elevator_servo.attach(flight_config_2.elevator_servo_pin, 500, 2400);
     elevator_servo.write(90);
 
-    ESP32PWM::allocateTimer(2);
-    throttle_servo.setPeriodHertz(50);
-    throttle_servo.attach(flight_config_2.throttle_esc_pin, 1000, 2000);
-    throttle_servo.write(0);
+    gps_serial.begin(9600, SERIAL_8N1, flight_config_2.gps_uart2_rx_pin, flight_config_2.gps_uart2_tx_pin);
+
+
 }
 
 // This function runs first. It configures the serial monitor, servos, motor, ESP32-NOW Long Range Protocol. It tells ESP-NOW to call the function 'decode_execute_message_from_ground_esp32' whenever a message is received.
 void setup() {
+    servo_motor_gps_serial_setup();
     Serial.begin(115200);
+
+    esp_task_wdt_init(1, true);
+    esp_task_wdt_add(NULL);
 
     WiFi.mode(WIFI_STA);
     if (esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR) != ESP_OK) {
-        Serial.println("Error: failed to set up Long Range Protocol.");
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
     }
 
     if (esp_now_init() != ESP_OK) {
-        Serial.println("Error: failed to initialise ESP-NOW.");
-    } else {
-        Serial.println("Success: Successfully initialised ESP-NOW Long Range Protocol.");
+        esp_now_init();
     }
+
+    esp_now_register_recv_cb(decode_configuration_info_message_from_ground);
 
     esp_now_peer_info_t connection_with_ground_esp_peer_info = {};
     memcpy(connection_with_ground_esp_peer_info.peer_addr, ground_esp32_mac_address, 6);
     connection_with_ground_esp_peer_info.channel = 0;
     connection_with_ground_esp_peer_info.encrypt = false;
-    if (esp_now_add_peer(&connection_with_ground_esp_peer_info) == ESP_OK) {
-        Serial.println("Success: Successfully added ground ESP32 as peer.");
-    } else {
-        Serial.println("Error: failed to add ground ESP32 as peer.");
+    if (esp_now_add_peer(&connection_with_ground_esp_peer_info) != ESP_OK) {
+        esp_now_add_peer(&connection_with_ground_esp_peer_info);
     }
-
-    esp_now_register_recv_cb(decode_configuration_info_message_from_ground);
 }
 
 // This function runs after te funtion 'setup'.
 void loop() {
+    esp_task_wdt_reset();
+    
     if (is_configuration_struct_setup == false || millis() - previous_time_received_packet_milliseconds > maximum_safe_timeout_milliseconds) {
         aileron_servo.write(90);
         elevator_servo.write(90);
         throttle_servo.write(0);
     }
-    
-    if (is_configuration_struct_setup == false) {
-        if (is_configuration_struct_1_filled == true && is_configuration_struct_2_filled == true) {
-            const uint8_t reply_message = 3;
-            esp_now_send(ground_esp32_mac_address, &reply_message, 1);
-            esp_now_register_recv_cb(decode_execute_message_from_ground);
-            maximum_safe_timeout_milliseconds = (uint16_t) (flight_config_2.dt_seconds * 1000) * 10;
-            is_configuration_struct_setup = true;
-            servo_motor_gps_serial_setup();
-            Serial.println("Success message sent.");
-        } else if (millis() - previous_time_sent_packet_milliseconds >= time_delay_between_packet_request_milliseconds) {
-            if (is_configuration_struct_1_filled == false) {
-                const uint8_t reply_message = 1;
-                esp_now_send(ground_esp32_mac_address, &reply_message, 1);
-                previous_time_sent_packet_milliseconds = millis();
-                Serial.println("Packet 1 request.");
-            } else if (is_configuration_struct_2_filled == false) {
-                const uint8_t reply_message = 2;
-                esp_now_send(ground_esp32_mac_address, &reply_message, 1);
-                previous_time_sent_packet_milliseconds = millis();
-                Serial.println("Packet 2 request.");
-            }
-        }
-    } else if (is_configuration_struct_setup == true) {
+
+    if (is_configuration_struct_setup == false && is_configuration_struct_1_filled == true && is_configuration_struct_2_filled == true) {
+        esp_now_register_recv_cb(decode_execute_message_from_ground);
+        maximum_safe_timeout_milliseconds = (uint16_t) (flight_config_2.dt_seconds * 1000) * 10;
+        is_configuration_struct_setup = true;
+    }
+
+    if (is_configuration_struct_setup == true && is_normal_operation_phase_started == false && millis() - previous_time_sent_packet_milliseconds >= time_delay_between_packet_request_milliseconds) {
+        previous_time_sent_packet_milliseconds = millis();
+        uint8_t reply_message = 3;
+        esp_now_send(ground_esp32_mac_address, &reply_message, 1);
+    } else if (is_normal_operation_phase_started == true) {
         while (gps_serial.available() > 0) {
             gps.encode(gps_serial.read());
         }
@@ -240,12 +232,6 @@ void loop() {
             flight_config_2.pid_controller_configuration_array[0][6] = gps.speed.mps() - flight_config_2.wind_speed_metres_per_second * cos((flight_config_2.wind_direction_degrees - gps.course.deg()) * (PI / 180));
             flight_config_2.pid_controller_configuration_array[1][6] = gps.altitude.meters();
             flight_config_2.pid_controller_configuration_array[2][6] = gps.course.deg();
-            Serial.print("Ground speed: ");
-            Serial.println(gps.speed.mps());
-            Serial.print("Altitude: ");
-            Serial.println(gps.altitude.meters());
-            Serial.print("Course: ");
-            Serial.println(gps.course.deg());
         }
     }
 }
