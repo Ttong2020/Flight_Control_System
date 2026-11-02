@@ -8,6 +8,8 @@
 
 constexpr uint8_t glider_esp32_mac_address[6] = {0x88, 0xF1, 0x55, 0x31, 0x07, 0x40};
 bool is_ps5_controller_connected = false;
+uint32_t previous_time_sent_packet_milliseconds = 0;
+uint16_t time_delay_between_packet_request_milliseconds = 50;
 bool is_configuration_struct_setup = false;
 
 // configuration data to send to glider ESP32.
@@ -33,7 +35,7 @@ struct configuration_struct_1_encode_decode_message_info {
 
 struct configuration_struct_2_other_info {
     uint8_t packet_num = 20;
-    //uint8_t minimum_airspeed_before_autopilot_disengage = ;
+    uint8_t minimum_airspeed_before_autopilot_disengage;
     // {kp, ki, kd, sum of past integrals, previous error, target value, measured value}.
     float pid_controller_configuration_array[4][7] = {{1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
                                                       {1.0f, 1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f},
@@ -53,6 +55,11 @@ struct configuration_struct_2_other_info {
 configuration_struct_1_encode_decode_message_info flight_config_1;
 configuration_struct_2_other_info flight_config_2;
 
+void print_measured_flight_data(const bool is_autopilot_engaged) {
+    Serial.println();
+}
+
+//Need updating: Can view the 3 flags as the same as other parameters
 void encode_send_message(const bool is_heading_autopilot, const bool is_altitude_autopilot, const bool is_airspeed_autopilot) {
     std::vector<uint8_t> message_to_send_in_byte_array(flight_config_1.bytes_required_for_normal_operation_ground_to_glider);
     
@@ -94,37 +101,29 @@ void decode_execute_message_from_glider(const uint8_t *glider_esp32_mac_address,
             flight_config_1.decode_configuration_array[i][3] = value_sent_at_index_i * flight_config_1.decode_configuration_array[i][0] + flight_config_1.decode_configuration_array[i][1];
             multiplication_of_number_of_possible_value = multiplication_of_number_of_possible_value * (uint64_t) flight_config_1.decode_configuration_array[i][2];
         }
-    }
-}
 
-void decode_execute_reply_from_glider(const uint8_t *glider_esp32_mac_address, const uint8_t *incoming_message, int len) {
-    if (len == 1) {
-        if (incoming_message[0] == 3) {
-            Serial.println("Reply message: 3");
-            esp_now_register_recv_cb(decode_execute_message_from_glider);
-            is_configuration_struct_setup = true;
-        } else if (incoming_message[0] == 1) {
-            esp_now_send(glider_esp32_mac_address, (uint8_t*) &flight_config_1, sizeof(flight_config_1));
-            Serial.println("Reply message: 1");
-        } else if (incoming_message[0] == 2) {
-            esp_now_send(glider_esp32_mac_address, (uint8_t*) &flight_config_2, sizeof(flight_config_2));
-            Serial.println("Reply message: 2");
-        }
+        print_measured_flight_data(is_autopilot_engaged);
+    } else if (len == 1 && incoming_message[0] == 3) {
+        Serial.println("Reply message received: 3");
+        is_configuration_struct_setup = true;
+        Serial.println("\x1B[32mSuccess: Configuration setup completed.\x1B[0m");
+        Serial.print("\x1B[2J\x1B[H");
     }
 }
 
 void setup() {
     Serial.begin(115200);
+    Serial.print("\x1B[2J\x1B[H");
 
     WiFi.mode(WIFI_STA);
     if (esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR) != ESP_OK) {
-        Serial.println("Error: failed to set up Long Range Protocol.");
+        Serial.print("\x1B[31mError: failed to set up Long Range Protocol.\x1B[0m");
     }
 
     if (esp_now_init() != ESP_OK) {
-        Serial.println("Error: failed to initialise ESP-NOW.");
+        Serial.println("\x1B[31mError: failed to initialise ESP-NOW.\x1B[0m");
     } else {
-        Serial.println("Success: Successfully initialised ESP-NOW Long Range Protocol.");
+        Serial.println("\x1B[32mSuccess: Successfully initialised ESP-NOW Long Range Protocol.\x1B[0m");
     }
 
     esp_now_peer_info_t connection_with_glider_esp32_peer_info = {};
@@ -132,30 +131,36 @@ void setup() {
     connection_with_glider_esp32_peer_info.channel = 0;
     connection_with_glider_esp32_peer_info.encrypt = false;
     if (esp_now_add_peer(&connection_with_glider_esp32_peer_info) == ESP_OK) {
-        Serial.println("Success: Successfuly added glider ESP32 as peer.");
+        Serial.println("\x1B[32mSuccess: Successfuly added glider ESP32 as peer.\x1B[0m");
     } else {
-        Serial.println("Error: failed to add glider ESP32 as peer.");
+        Serial.println("\x1B[31mError: failed to add glider ESP32 as peer.\x1B[0m");
     }
 
     ps5.begin();
     Serial.println("Bluetooth initialised.");
     Serial.print("Waiting for PS5 Controller...");
 
-    esp_now_register_recv_cb(decode_execute_reply_from_glider);
+    esp_now_register_recv_cb(decode_execute_message_from_glider);
 }
 
 void loop() {
     if (ps5.isConnected() == true && is_ps5_controller_connected != true) {
         is_ps5_controller_connected = true;
         Serial.println();
-        Serial.println("Success: PS5 Controller successfully connected.");
+        Serial.println("\x1B[32mSuccess: PS5 Controller successfully connected.\x1B[0m");
     } else if (ps5.isConnected() == false && is_ps5_controller_connected != false) {
         is_ps5_controller_connected = false;
         Serial.print("Waiting for PS5 Controller...");
     }
-    
-    if (is_configuration_struct_setup == true && ps5.isConnected() == true) {
 
+    if (is_configuration_struct_setup == false && millis() - previous_time_sent_packet_milliseconds >= time_delay_between_packet_request_milliseconds) {
+        previous_time_sent_packet_milliseconds = millis();
+        esp_now_send(glider_esp32_mac_address, (uint8_t*) &flight_config_1, sizeof(flight_config_1));
+        delay(25);
+        esp_now_send(glider_esp32_mac_address, (uint8_t*) &flight_config_2, sizeof(flight_config_2));
+    }
+
+    if (is_configuration_struct_setup == true && ps5.isConnected() == true) {
         delay(flight_config_2.dt_seconds * 1000);
         
         flight_config_1.decode_configuration_array[0][3] = round((1.0 - ((float) (ps5.lx + 128) / 255)) * 40 + 70);
