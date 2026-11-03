@@ -1,12 +1,15 @@
 #include <Arduino.h>
 #include <ps5Controller.h>
 #include <SimpleBLE.h>
+#include <WiFi.h>
+#include <ESPAsyncWebServer.h>
+
 
 const char* ssid = "ESP32-Flight_Control_System";
 const char* password = "192837465";
 
 uint32_t previous_time_sent_serial_data_milliseconds = 0;
-uint16_t time_delay_between_serial_data_sent_milliseconds = 50;
+uint16_t time_delay_between_serial_data_sent_milliseconds = 100;
 bool is_ps5_controller_connected = false;
 bool is_configuration_struct_setup = false;
 bool is_resend_configuration_structs = false;
@@ -17,16 +20,76 @@ const uint8_t ground_uart2_tx_pin = 17;
 uint8_t new_aileron_servo_angle = 90;
 uint8_t new_elevator_servo_angle = 90;
 uint8_t new_throttle_servo_angle = 0;
-int32_t new_measured_airspeed = 0;
-int32_t new_measured_altitude = 0;
-int32_t new_measured_heading = 0;
-int32_t new_measured_vertical_speed = 0;
-int32_t new_measured_signal_quality_score = 0;
 
 HardwareSerial ground_serial(2);
-SimpleBLE ble_serial;
+AsyncWebServer webserver(80);
+AsyncWebSocket websocket("/websocket");
+
+const char html_code[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang = "en-GB">
+    <head>
+        <title>
+        RC Plane Flight Control System
+        </title>
+    </head>
+    <body>
+        <span id = "new_measured_airspeed">
+        Airspeed (m/s)
+        </span> <br>
+        <label id = "label_new_measured_airspeed" for = "new_measured_airspeed">
+        0
+        </label> <br>
+        
+        <span id = "new_measured_altitude">
+        Altitide (m)
+        </span> <br>
+        <label id = "label_new_measured_altitude" for = "new_measured_altitude">
+        0
+        </label> <br>
+
+        <span id = "new_measured_heading">
+        Heading (deg)
+        </span> <br>
+        <label id = "label_new_measured_heading" for = "new_measured_heading">
+        0
+        </label> <br>
+
+        <script>
+            let websocket = new WebSocket("ws://" + window.location.hostname + "/websocket");
+            let new_measured_airspeed = 0;
+            let new_measured_altitude = 0;
+            let new_measured_heading = 0;
+            let new_measured_vertical_speed = 0;
+            let new_measured_signal_quality_score = 0;
+
+            function decode_show_message_from_ground_bluetooth(event) {
+                let incoming_message = event.data.split(",");
+                if (incoming_message.length == 5) {
+                    document.getElementById("label_new_measured_airspeed").innerText = incoming_message[0];
+                    document.getElementById("label_new_measured_altitude").innerText = incoming_message[1];
+                    document.getElementById("label_new_measured_heading").innerText = incoming_message[2];
+                }
+            }
+
+            websocket.onmessage = decode_show_message_from_ground_bluetooth;
+        </script>
+    </body>
+</html>
+)rawliteral";
 
 void setup() {
+    WiFi.softAP(ssid, password);
+    webserver.addHandler(&websocket);
+
+    webserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+        request->send(200, "text/html", html_code);
+    });
+
+    webserver.begin();
+
+    delay(500);
+
     Serial.begin(115200);
     Serial.print("\x1B[2J\x1B[H");
 
@@ -34,8 +97,6 @@ void setup() {
     Serial.println("Classic bluetooth initialised. Waiting for PS5 Controller...");
 
     ground_serial.begin(115200, SERIAL_8N1, ground_uart2_rx_pin, ground_uart2_tx_pin);
-    ble_serial.begin("Measured Glider Flight Data");
-    Serial.println("BLE initialised. Waiting for BLE connection.");
 }
 
 void loop() {
@@ -55,6 +116,9 @@ void loop() {
         int32_t new_measured_signal_quality_score;
         String serial_message = ground_serial.readStringUntil('\n');
         sscanf(serial_message.c_str(), "%d,%d,%d,%d,%d", &new_measured_airspeed, &new_measured_altitude, &new_measured_heading, &new_measured_vertical_speed, &new_measured_signal_quality_score);
+        
+        String message_to_send_over_websocket = String(new_measured_airspeed) + "," + String(new_measured_altitude) + "," + String(new_measured_heading) + "," + String(new_measured_vertical_speed) + "," + String(new_measured_signal_quality_score);
+        websocket.textAll(message_to_send_over_websocket);
     }
 
     if (ground_serial.available() > 0 && is_configuration_struct_setup == false) {
@@ -78,4 +142,6 @@ void loop() {
 
         ground_serial.printf("%u,%u,%u,%u\n", new_aileron_servo_angle, new_elevator_servo_angle, new_throttle_servo_angle, is_resend_configuration_structs);
     }
+
+    websocket.cleanupClients();
 }
