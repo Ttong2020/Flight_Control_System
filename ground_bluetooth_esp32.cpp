@@ -1,147 +1,94 @@
 #include <Arduino.h>
 #include <ps5Controller.h>
-#include <SimpleBLE.h>
-#include <WiFi.h>
-#include <ESPAsyncWebServer.h>
-
-
-const char* ssid = "ESP32-Flight_Control_System";
-const char* password = "192837465";
+#include <cmath>
 
 uint32_t previous_time_sent_serial_data_milliseconds = 0;
-uint16_t time_delay_between_serial_data_sent_milliseconds = 100;
-bool is_ps5_controller_connected = false;
+uint16_t time_delay_between_serial_data_sent_milliseconds = 50;
 bool is_configuration_struct_setup = false;
-bool is_resend_configuration_structs = false;
 
-const uint8_t ground_uart2_rx_pin = 16;
-const uint8_t ground_uart2_tx_pin = 17;
+int32_t new_aileron_servo_angle = 90;
+int32_t new_elevator_servo_angle = 90;
+float resultant_of_y_z_accelerometer;
+float ps5_controller_physical_roll_angle;
+int32_t new_rudder_servo_angle = 90;
+int32_t new_throttle_servo_angle = 0;
+int32_t is_resend_configuration_structs;
+bool is_ps5_controller_l1_pressed = false;
+bool is_ps5_controller_r1_pressed = false;
+const float rudder_servo_angle_mode_1_sensitivity_multiplier = 0.333;
+const float rudder_servo_angle_mode_2_sensitivity_multiplier = 1;
+const float adverse_yaw_aileron_to_rudder_servo_angle_multiplier = 1;
+bool is_adverse_yaw_assist = false;
+uint8_t rudder_servo_mode = 0;
 
-uint8_t new_aileron_servo_angle = 90;
-uint8_t new_elevator_servo_angle = 90;
-uint8_t new_throttle_servo_angle = 0;
+const uint8_t ground_uart2_rx_pin = 18;
+const uint8_t ground_uart2_tx_pin = 19;
 
 HardwareSerial ground_serial(2);
-AsyncWebServer webserver(80);
-AsyncWebSocket websocket("/websocket");
-
-const char html_code[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
-<html lang = "en-GB">
-    <head>
-        <title>
-        RC Plane Flight Control System
-        </title>
-    </head>
-    <body>
-        <span id = "new_measured_airspeed">
-        Airspeed (m/s)
-        </span> <br>
-        <label id = "label_new_measured_airspeed" for = "new_measured_airspeed">
-        0
-        </label> <br>
-        
-        <span id = "new_measured_altitude">
-        Altitide (m)
-        </span> <br>
-        <label id = "label_new_measured_altitude" for = "new_measured_altitude">
-        0
-        </label> <br>
-
-        <span id = "new_measured_heading">
-        Heading (deg)
-        </span> <br>
-        <label id = "label_new_measured_heading" for = "new_measured_heading">
-        0
-        </label> <br>
-
-        <script>
-            let websocket = new WebSocket("ws://" + window.location.hostname + "/websocket");
-            let new_measured_airspeed = 0;
-            let new_measured_altitude = 0;
-            let new_measured_heading = 0;
-            let new_measured_vertical_speed = 0;
-            let new_measured_signal_quality_score = 0;
-
-            function decode_show_message_from_ground_bluetooth(event) {
-                let incoming_message = event.data.split(",");
-                if (incoming_message.length == 5) {
-                    document.getElementById("label_new_measured_airspeed").innerText = incoming_message[0];
-                    document.getElementById("label_new_measured_altitude").innerText = incoming_message[1];
-                    document.getElementById("label_new_measured_heading").innerText = incoming_message[2];
-                }
-            }
-
-            websocket.onmessage = decode_show_message_from_ground_bluetooth;
-        </script>
-    </body>
-</html>
-)rawliteral";
 
 void setup() {
-    WiFi.softAP(ssid, password);
-    webserver.addHandler(&websocket);
-
-    webserver.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
-        request->send(200, "text/html", html_code);
-    });
-
-    webserver.begin();
-
-    delay(500);
-
-    Serial.begin(115200);
-    Serial.print("\x1B[2J\x1B[H");
-
     ps5.begin();
-    Serial.println("Classic bluetooth initialised. Waiting for PS5 Controller...");
 
     ground_serial.begin(115200, SERIAL_8N1, ground_uart2_rx_pin, ground_uart2_tx_pin);
 }
 
 void loop() {
-    if (ps5.isConnected() == true && is_ps5_controller_connected != true) {
-        is_ps5_controller_connected = true;
-        Serial.println("\x1B[32mSuccess: PS5 Controller successfully connected.\x1B[0m");
-    } else if (ps5.isConnected() == false && is_ps5_controller_connected != false) {
-        is_ps5_controller_connected = false;
-        Serial.println("Waiting for PS5 Controller...");
-    }
-
-    if (ground_serial.available() > 0 && is_configuration_struct_setup == true) {
-        int32_t new_measured_airspeed;
-        int32_t new_measured_altitude;
-        int32_t new_measured_heading;
-        int32_t new_measured_vertical_speed;
-        int32_t new_measured_signal_quality_score;
-        String serial_message = ground_serial.readStringUntil('\n');
-        sscanf(serial_message.c_str(), "%d,%d,%d,%d,%d", &new_measured_airspeed, &new_measured_altitude, &new_measured_heading, &new_measured_vertical_speed, &new_measured_signal_quality_score);
-        
-        String message_to_send_over_websocket = String(new_measured_airspeed) + "," + String(new_measured_altitude) + "," + String(new_measured_heading) + "," + String(new_measured_vertical_speed) + "," + String(new_measured_signal_quality_score);
-        websocket.textAll(message_to_send_over_websocket);
-    }
-
     if (ground_serial.available() > 0 && is_configuration_struct_setup == false) {
         String serial_message = ground_serial.readStringUntil('\n');
         if (serial_message == "3") {
             is_configuration_struct_setup = true;
-            is_resend_configuration_structs = false;
         }
     }
 
     if (ps5.isConnected() == true && is_configuration_struct_setup == true && millis() - previous_time_sent_serial_data_milliseconds >= time_delay_between_serial_data_sent_milliseconds) {
         previous_time_sent_serial_data_milliseconds = millis();
+        
+        is_ps5_controller_l1_pressed = false;
+        is_ps5_controller_r1_pressed = false;
+        if (ps5.l1.pressed == true) {
+            is_ps5_controller_l1_pressed = true;
+        }
+        if (ps5.r1.pressed == true) {
+            is_ps5_controller_r1_pressed = true;
+        }
 
-        new_aileron_servo_angle = round((1.0 - ((float) (ps5.lx + 128) / 255)) * 40 + 70);
-        new_elevator_servo_angle = round((1.0 - ((float) (ps5.ly + 128) / 255)) * 90 + 45);
-        new_throttle_servo_angle = round(((float) ps5.r2 / 255) * 180);
-        is_resend_configuration_structs = ps5.share;
+        if (is_ps5_controller_l1_pressed == false && is_ps5_controller_r1_pressed == true) {
+            rudder_servo_mode = 0;
+        } else if (is_ps5_controller_l1_pressed == true && is_ps5_controller_r1_pressed == false) {
+            rudder_servo_mode = 1;
+        } else if (is_ps5_controller_l1_pressed == true && is_ps5_controller_r1_pressed == true) {
+            rudder_servo_mode = 2;
+        }
+        if (ps5.cross.pressed == true) {
+            is_adverse_yaw_assist = true;
+        } else if (ps5.circle.pressed == true) {
+            is_adverse_yaw_assist = false;
+        }
+
+        new_aileron_servo_angle = constrain(round(((float) (ps5.rx + 128) / 255) * 40 + 70), 70, 110);
+        new_elevator_servo_angle = constrain(round(((float) (ps5.ry + 128) / 255) * 90 + 45), 45, 135);
+        resultant_of_y_z_accelerometer = pow(pow(ps5.accelY, 2) + pow(ps5.accelZ, 2), 0.5);
+        if (resultant_of_y_z_accelerometer != 0 && rudder_servo_mode != 0) {
+            ps5_controller_physical_roll_angle = (atan(ps5.accelX / resultant_of_y_z_accelerometer) * (180.0 / PI)) / -1;
+            if (rudder_servo_mode == 1) {
+                new_rudder_servo_angle = round(((constrain(ps5_controller_physical_roll_angle * rudder_servo_angle_mode_1_sensitivity_multiplier, -90, 90) + 90) / 180) * 120 + 30);
+            } else if (rudder_servo_mode == 2) {
+                new_rudder_servo_angle = round(((constrain(ps5_controller_physical_roll_angle * rudder_servo_angle_mode_2_sensitivity_multiplier, -90, 90) + 90) / 180) * 120 + 30);
+            }
+        } else {
+            new_rudder_servo_angle = 90;
+        }
+
+        if (is_adverse_yaw_assist == true) {
+            new_rudder_servo_angle = constrain(new_rudder_servo_angle + (new_aileron_servo_angle - 90) * adverse_yaw_aileron_to_rudder_servo_angle_multiplier, 30, 150);
+        }
+        //new_rudder_servo_angle = round((1.0 - ((float) (ps5.rx + 128) / 255)) * 120 + 30);
+        new_throttle_servo_angle = round(((float) ps5.l2 / 255) * 180);
+        is_resend_configuration_structs = ps5.share.pressed;
         if (is_resend_configuration_structs == true) {
             is_configuration_struct_setup = false;
         }
 
-        ground_serial.printf("%u,%u,%u,%u\n", new_aileron_servo_angle, new_elevator_servo_angle, new_throttle_servo_angle, is_resend_configuration_structs);
+        ground_serial.printf("%d,%d,%d,%d,%d\n", new_aileron_servo_angle, new_elevator_servo_angle, new_rudder_servo_angle, new_throttle_servo_angle, is_resend_configuration_structs);
     }
-
-    websocket.cleanupClients();
 }
